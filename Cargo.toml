@@ -1,0 +1,41 @@
+[package]
+name = "animus-provider-opencode"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "OpenCode CLI provider plugin for Animus"
+repository = "https://github.com/launchapp-dev/animus-provider-opencode"
+homepage = "https://github.com/launchapp-dev/animus-cli"
+readme = "README.md"
+default-run = "animus-provider-opencode"
+
+[lib]
+name = "animus_provider_opencode"
+path = "src/lib.rs"
+
+[[bin]]
+name = "animus-provider-opencode"
+path = "src/main.rs"
+
+[dependencies]
+animus-plugin-protocol   = { git = "https://github.com/launchapp-dev/animus-protocol", branch = "main" }
+animus-provider-protocol = { git = "https://github.com/launchapp-dev/animus-protocol", branch = "main" }
+animus-plugin-runtime    = { git = "https://github.com/launchapp-dev/animus-protocol", branch = "main" }
+animus-session-backend   = { git = "https://github.com/launchapp-dev/animus-protocol", branch = "main" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "process", "sync", "time"] }
+async-trait = "0.1"
+futures = "0.3"
+
+anyhow = "1"
+thiserror = "1"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
