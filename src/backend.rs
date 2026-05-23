@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use animus_plugin_protocol::{HealthCheckResult, HealthStatus};
 use animus_provider_protocol::{
-    AgentResumeRequest, AgentRunRequest, AgentRunResponse, BackendError, ProviderBackend,
-    ProviderCapabilities, ProviderManifest,
+    AgentNotification, AgentResumeRequest, AgentRunRequest, AgentRunResponse, BackendError,
+    NotificationSink, ProviderBackend, ProviderCapabilities, ProviderManifest,
 };
 use animus_session_backend::{
     lookup_binary_in_path, OpenCodeSessionBackend, SessionBackend, SessionEvent, SessionRequest,
@@ -96,6 +96,7 @@ impl OpenCodeProviderBackend {
         &self,
         mut run: SessionRun,
         started: Instant,
+        sink: NotificationSink,
     ) -> Result<AgentRunResponse, BackendError> {
         let mut output_buf = String::new();
         let mut final_text: Option<String> = None;
@@ -106,6 +107,9 @@ impl OpenCodeProviderBackend {
         let mut errors: Vec<String> = Vec::new();
         let mut exit_code: i32 = 0;
         let mut runtime_session_id = run.session_id.clone();
+        // Resolved up-front so streaming notifications always carry a stable id,
+        // even for events that arrive before `Started`.
+        let stream_session_id = runtime_session_id.clone().unwrap_or_else(uuid::new_v4_like);
 
         while let Some(event) = run.events.recv().await {
             match event {
@@ -115,9 +119,19 @@ impl OpenCodeProviderBackend {
                     }
                 }
                 SessionEvent::TextDelta { text } => {
+                    sink.emit(AgentNotification::Output {
+                        session_id: stream_session_id.clone(),
+                        text: text.clone(),
+                        is_final: false,
+                    });
                     output_buf.push_str(&text);
                 }
                 SessionEvent::FinalText { text } => {
+                    sink.emit(AgentNotification::Output {
+                        session_id: stream_session_id.clone(),
+                        text: text.clone(),
+                        is_final: true,
+                    });
                     final_text = Some(text);
                 }
                 SessionEvent::ToolCall {
@@ -125,6 +139,12 @@ impl OpenCodeProviderBackend {
                     arguments,
                     server,
                 } => {
+                    sink.emit(AgentNotification::ToolCall {
+                        session_id: stream_session_id.clone(),
+                        name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        server: server.clone(),
+                    });
                     tool_calls.push(serde_json::json!({
                         "tool_name": tool_name,
                         "arguments": arguments,
@@ -136,6 +156,12 @@ impl OpenCodeProviderBackend {
                     output,
                     success,
                 } => {
+                    sink.emit(AgentNotification::ToolResult {
+                        session_id: stream_session_id.clone(),
+                        name: tool_name.clone(),
+                        output: output.clone(),
+                        success,
+                    });
                     tool_results.push(serde_json::json!({
                         "tool_name": tool_name,
                         "output": output,
@@ -143,6 +169,10 @@ impl OpenCodeProviderBackend {
                     }));
                 }
                 SessionEvent::Thinking { text } => {
+                    sink.emit(AgentNotification::Thinking {
+                        session_id: stream_session_id.clone(),
+                        text: text.clone(),
+                    });
                     thinking.push(text);
                 }
                 SessionEvent::Artifact {
@@ -162,6 +192,11 @@ impl OpenCodeProviderBackend {
                     message,
                     recoverable,
                 } => {
+                    sink.emit(AgentNotification::Error {
+                        session_id: stream_session_id.clone(),
+                        message: message.clone(),
+                        recoverable,
+                    });
                     errors.push(message);
                     if !recoverable {
                         exit_code = 1;
@@ -176,7 +211,7 @@ impl OpenCodeProviderBackend {
         }
 
         let output = final_text.unwrap_or(output_buf);
-        let session_id = runtime_session_id.unwrap_or_else(uuid::new_v4_like);
+        let session_id = runtime_session_id.unwrap_or(stream_session_id);
         let backend_label = format!("opencode:{}", run.selected_backend);
 
         Ok(AgentRunResponse {
@@ -253,6 +288,15 @@ impl ProviderBackend for OpenCodeProviderBackend {
     }
 
     async fn run_agent(&self, request: AgentRunRequest) -> Result<AgentRunResponse, BackendError> {
+        self.run_agent_streaming(request, NotificationSink::noop())
+            .await
+    }
+
+    async fn run_agent_streaming(
+        &self,
+        request: AgentRunRequest,
+        sink: NotificationSink,
+    ) -> Result<AgentRunResponse, BackendError> {
         let started = Instant::now();
         let session_request = self.build_session_request(&request);
         let run = self
@@ -260,12 +304,21 @@ impl ProviderBackend for OpenCodeProviderBackend {
             .start_session(session_request)
             .await
             .map_err(map_session_error)?;
-        self.drain_run(run, started).await
+        self.drain_run(run, started, sink).await
     }
 
     async fn resume_agent(
         &self,
         request: AgentResumeRequest,
+    ) -> Result<AgentRunResponse, BackendError> {
+        self.resume_agent_streaming(request, NotificationSink::noop())
+            .await
+    }
+
+    async fn resume_agent_streaming(
+        &self,
+        request: AgentResumeRequest,
+        sink: NotificationSink,
     ) -> Result<AgentRunResponse, BackendError> {
         let started = Instant::now();
         let session_id = request.session_id.clone().ok_or_else(|| {
@@ -279,7 +332,7 @@ impl ProviderBackend for OpenCodeProviderBackend {
             .resume_session(session_request, &session_id)
             .await
             .map_err(map_session_error)?;
-        self.drain_run(run, started).await
+        self.drain_run(run, started, sink).await
     }
 
     async fn cancel_agent(&self, session_id: &str) -> Result<(), BackendError> {

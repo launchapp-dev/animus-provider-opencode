@@ -5,7 +5,11 @@ use std::sync::{Arc, Mutex};
 use animus_plugin_protocol::HealthStatus;
 use animus_provider_opencode::backend::OpenCodeProviderBackend;
 use animus_provider_opencode::config::OpenCodeConfig;
-use animus_provider_protocol::{AgentRunRequest, ProviderBackend};
+use animus_provider_protocol::{
+    AgentNotification, AgentRunRequest, NotificationSink, ProviderBackend,
+    NOTIFICATION_AGENT_ERROR, NOTIFICATION_AGENT_OUTPUT, NOTIFICATION_AGENT_THINKING,
+    NOTIFICATION_AGENT_TOOL_CALL, NOTIFICATION_AGENT_TOOL_RESULT,
+};
 use animus_session_backend::{
     Error as SessionError, Result as SessionResult, SessionBackend, SessionBackendInfo,
     SessionBackendKind, SessionCapabilities, SessionEvent, SessionRequest, SessionRun,
@@ -359,6 +363,194 @@ async fn health_healthy_when_opencode_on_path() {
         health.last_error
     );
     assert!(health.last_error.is_none());
+}
+
+#[tokio::test]
+async fn run_agent_streaming_emits_notifications_in_order() {
+    let fake = FakeSession::with_events(vec![
+        SessionEvent::Started {
+            backend: "opencode-fake".into(),
+            session_id: Some("fake-session-1".into()),
+            pid: Some(7),
+        },
+        SessionEvent::TextDelta { text: "hel".into() },
+        SessionEvent::TextDelta { text: "lo".into() },
+        SessionEvent::Thinking {
+            text: "ponder".into(),
+        },
+        SessionEvent::ToolCall {
+            tool_name: "shell".into(),
+            arguments: serde_json::json!({ "cmd": "ls" }),
+            server: Some("local".into()),
+        },
+        SessionEvent::ToolResult {
+            tool_name: "shell".into(),
+            output: serde_json::json!({ "stdout": "Cargo.toml" }),
+            success: true,
+        },
+        SessionEvent::Error {
+            message: "soft fail".into(),
+            recoverable: true,
+        },
+        SessionEvent::FinalText {
+            text: "hello FINAL".into(),
+        },
+        SessionEvent::Finished { exit_code: Some(0) },
+    ]);
+
+    let backend = OpenCodeProviderBackend::with_session(
+        fake.clone(),
+        OpenCodeConfig::for_testing("opencode"),
+    );
+
+    let recorder: Arc<Mutex<Vec<AgentNotification>>> = Arc::new(Mutex::new(Vec::new()));
+    let r2 = recorder.clone();
+    let sink = NotificationSink::new(move |n| r2.lock().unwrap().push(n));
+
+    let response = backend
+        .run_agent_streaming(run_request(None, Some("gpt-5.2"), "ping"), sink)
+        .await
+        .expect("streaming run should succeed");
+
+    assert_eq!(response.session_id, "fake-session-1");
+    assert_eq!(response.exit_code, 0);
+    assert_eq!(response.output, "hello FINAL");
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_results.len(), 1);
+    assert_eq!(response.thinking, vec!["ponder".to_string()]);
+    assert_eq!(response.errors, vec!["soft fail".to_string()]);
+
+    let recorded = recorder.lock().unwrap().clone();
+    let methods: Vec<&str> = recorded.iter().map(|n| n.method()).collect();
+    assert_eq!(
+        methods,
+        vec![
+            NOTIFICATION_AGENT_OUTPUT,
+            NOTIFICATION_AGENT_OUTPUT,
+            NOTIFICATION_AGENT_THINKING,
+            NOTIFICATION_AGENT_TOOL_CALL,
+            NOTIFICATION_AGENT_TOOL_RESULT,
+            NOTIFICATION_AGENT_ERROR,
+            NOTIFICATION_AGENT_OUTPUT,
+        ],
+        "unexpected notification order"
+    );
+
+    match &recorded[0] {
+        AgentNotification::Output {
+            session_id,
+            text,
+            is_final,
+        } => {
+            assert_eq!(session_id, "fake-session-1");
+            assert_eq!(text, "hel");
+            assert!(!is_final);
+        }
+        other => panic!("expected first emission to be Output, got {other:?}"),
+    }
+    match &recorded[6] {
+        AgentNotification::Output { text, is_final, .. } => {
+            assert_eq!(text, "hello FINAL");
+            assert!(is_final, "FinalText should map to is_final=true");
+        }
+        other => panic!("expected last emission to be final Output, got {other:?}"),
+    }
+    match &recorded[3] {
+        AgentNotification::ToolCall {
+            name,
+            arguments,
+            server,
+            ..
+        } => {
+            assert_eq!(name, "shell");
+            assert_eq!(arguments["cmd"], "ls");
+            assert_eq!(server.as_deref(), Some("local"));
+        }
+        other => panic!("expected ToolCall, got {other:?}"),
+    }
+    match &recorded[4] {
+        AgentNotification::ToolResult {
+            name,
+            output,
+            success,
+            ..
+        } => {
+            assert_eq!(name, "shell");
+            assert_eq!(output["stdout"], "Cargo.toml");
+            assert!(success);
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+    match &recorded[5] {
+        AgentNotification::Error {
+            message,
+            recoverable,
+            ..
+        } => {
+            assert_eq!(message, "soft fail");
+            assert!(*recoverable);
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn run_agent_and_streaming_produce_same_response() {
+    fn events() -> Vec<SessionEvent> {
+        vec![
+            SessionEvent::Started {
+                backend: "opencode-fake".into(),
+                session_id: Some("fake-session-1".into()),
+                pid: None,
+            },
+            SessionEvent::TextDelta { text: "a".into() },
+            SessionEvent::TextDelta { text: "b".into() },
+            SessionEvent::ToolCall {
+                tool_name: "read_file".into(),
+                arguments: serde_json::json!({"path": "/x"}),
+                server: None,
+            },
+            SessionEvent::ToolResult {
+                tool_name: "read_file".into(),
+                output: serde_json::json!("ok"),
+                success: true,
+            },
+            SessionEvent::FinalText {
+                text: "DONE".into(),
+            },
+            SessionEvent::Finished { exit_code: Some(0) },
+        ]
+    }
+
+    let backend_a = OpenCodeProviderBackend::with_session(
+        FakeSession::with_events(events()),
+        OpenCodeConfig::for_testing("opencode"),
+    );
+    let resp_a = backend_a
+        .run_agent(run_request(None, Some("gpt-5.2"), "p"))
+        .await
+        .expect("run_agent");
+
+    let backend_b = OpenCodeProviderBackend::with_session(
+        FakeSession::with_events(events()),
+        OpenCodeConfig::for_testing("opencode"),
+    );
+    let resp_b = backend_b
+        .run_agent_streaming(
+            run_request(None, Some("gpt-5.2"), "p"),
+            NotificationSink::noop(),
+        )
+        .await
+        .expect("run_agent_streaming");
+
+    assert_eq!(resp_a.session_id, resp_b.session_id);
+    assert_eq!(resp_a.exit_code, resp_b.exit_code);
+    assert_eq!(resp_a.output, resp_b.output);
+    assert_eq!(resp_a.tool_calls, resp_b.tool_calls);
+    assert_eq!(resp_a.tool_results, resp_b.tool_results);
+    assert_eq!(resp_a.thinking, resp_b.thinking);
+    assert_eq!(resp_a.errors, resp_b.errors);
+    assert_eq!(resp_a.backend, resp_b.backend);
 }
 
 #[tokio::test]
