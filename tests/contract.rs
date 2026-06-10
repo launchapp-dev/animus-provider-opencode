@@ -566,8 +566,11 @@ async fn manifest_capabilities_sanity() {
     assert!(manifest.capabilities.write_capable);
     assert!(manifest.capabilities.mcp);
     assert!(
-        manifest.supported_models.iter().any(|m| m == "gpt-5.2"),
-        "expected default gpt-5.2 in supported_models: {:?}",
+        manifest
+            .supported_models
+            .iter()
+            .any(|m| m == "openai/gpt-5.2"),
+        "expected openai/gpt-5.2 in supported_models: {:?}",
         manifest.supported_models
     );
 }

@@ -53,30 +53,20 @@ impl OpenCodeProviderBackend {
         } else {
             request.prompt.clone()
         };
-        let mcp_endpoint = request.mcp_servers.as_ref().and_then(extract_mcp_endpoint);
         let env_vars: Vec<(String, String)> = request
             .env
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let extras = if request.extras.is_empty() {
-            request
-                .runtime_contract
-                .clone()
-                .unwrap_or(Value::Object(Default::default()))
-        } else {
-            let map: serde_json::Map<String, Value> = request
-                .extras
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            let mut merged = Value::Object(map);
-            if let (Some(obj), Some(contract)) = (merged.as_object_mut(), &request.runtime_contract)
-            {
-                obj.insert("runtime_contract".to_string(), contract.clone());
-            }
-            merged
-        };
+        let mut extras_map: serde_json::Map<String, Value> = request
+            .extras
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if let Some(contract) = &request.runtime_contract {
+            extras_map.insert("runtime_contract".to_string(), contract.clone());
+        }
+        let extras = Value::Object(extras_map);
 
         SessionRequest {
             tool: "opencode".to_string(),
@@ -84,7 +74,8 @@ impl OpenCodeProviderBackend {
             prompt,
             cwd: request.cwd.clone(),
             project_root: request.project_root.clone(),
-            mcp_endpoint,
+            mcp_endpoint: None,
+            mcp_servers: request.mcp_servers.clone(),
             permission_mode: request.permission_mode.clone(),
             timeout_secs: request.timeout_secs,
             env_vars,
@@ -231,17 +222,6 @@ impl OpenCodeProviderBackend {
     }
 }
 
-fn extract_mcp_endpoint(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) => Some(s.clone()),
-        Value::Object(map) => map
-            .get("endpoint")
-            .or_else(|| map.get("url"))
-            .and_then(|v| v.as_str().map(|s| s.to_string())),
-        _ => None,
-    }
-}
-
 // Tiny dependency-free pseudo-uuid generator. We only need a unique-ish
 // fallback session id when the underlying session backend never assigned
 // one; we deliberately avoid pulling in the `uuid` crate just for this.
@@ -271,10 +251,10 @@ impl ProviderBackend for OpenCodeProviderBackend {
             version: env!("CARGO_PKG_VERSION").to_string(),
             description: env!("CARGO_PKG_DESCRIPTION").to_string(),
             supported_models: vec![
-                "gpt-5.2".to_string(),
-                "gpt-5".to_string(),
-                "claude-sonnet-4-6".to_string(),
-                "claude-opus-4-7".to_string(),
+                "openai/gpt-5.2".to_string(),
+                "openai/gpt-5".to_string(),
+                "anthropic/claude-sonnet-4-6".to_string(),
+                "anthropic/claude-opus-4-7".to_string(),
             ],
             tool: info.provider_tool.clone(),
             capabilities: ProviderCapabilities {
