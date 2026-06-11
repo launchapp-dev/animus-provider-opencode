@@ -1,6 +1,6 @@
 schema = "animus.plugin.v1"
 name = "animus-provider-opencode"
-version = "0.2.4"
+version = "0.2.5"
 plugin_kind = "provider"
 description = "OpenCode CLI provider plugin"
 

@@ -121,6 +121,12 @@ fn emit_manifest_if_requested() {
                 "description": "DeepSeek API key forwarded to OpenCode when configured.",
                 "sensitive": true,
                 "required": false
+            },
+            {
+                "name": "OPENCODE_CONFIG_CONTENT",
+                "description": "Inline OpenCode config JSON the session backend injects per run.",
+                "sensitive": true,
+                "required": false
             }
         ]
     });
