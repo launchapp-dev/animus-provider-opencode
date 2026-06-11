@@ -4,7 +4,8 @@ use std::time::Instant;
 use animus_plugin_protocol::{HealthCheckResult, HealthStatus};
 use animus_provider_protocol::{
     AgentNotification, AgentResumeRequest, AgentRunRequest, AgentRunResponse, BackendError,
-    NotificationSink, ProviderBackend, ProviderCapabilities, ProviderManifest,
+    InteractionRequestPayload, NotificationSink, ProviderBackend, ProviderCapabilities,
+    ProviderManifest,
 };
 use animus_session_backend::{
     lookup_binary_in_path, OpenCodeSessionBackend, SessionBackend, SessionEvent, SessionRequest,
@@ -178,6 +179,23 @@ impl OpenCodeProviderBackend {
                 }
                 SessionEvent::Metadata { metadata: meta } => {
                     metadata.push(meta);
+                }
+                SessionEvent::InteractionRequested { id, kind } => {
+                    sink.emit(AgentNotification::InteractionRequested {
+                        session_id: stream_session_id.clone(),
+                        interaction_id: id.clone(),
+                        interaction_kind: kind.clone(),
+                        payload: InteractionRequestPayload::default(),
+                        expires_at: None,
+                    });
+                    metadata.push(serde_json::json!({
+                        "interaction_requested": { "id": id, "kind": kind },
+                    }));
+                }
+                SessionEvent::InteractionResolved { id, decision } => {
+                    metadata.push(serde_json::json!({
+                        "interaction_resolved": { "id": id, "decision": decision },
+                    }));
                 }
                 SessionEvent::Error {
                     message,
