@@ -2,11 +2,11 @@
 
 An [OpenCode](https://opencode.ai) provider plugin for [Animus](https://github.com/launchapp-dev/animus-cli).
 
-> **Status:** Under construction — landing in Animus v0.4.x. This crate currently lives in the Animus core workspace at `crates/animus-provider-opencode/`; v0.4.x extracts it to this standalone repository.
-
 ## What this is
 
-Animus v0.4.0 makes providers (LLM CLI wrappers) pluggable. This repository will ship `animus-provider-opencode`, a stdio plugin that wraps the OpenCode CLI as an Animus provider. Any workflow phase that targets `tool: opencode` dispatches through this plugin.
+A stdio provider plugin that exposes the OpenCode CLI as an Animus provider. Any workflow phase that targets `tool: opencode` dispatches through this plugin.
+
+As of v0.3.0 it drives the OpenCode CLI over the **Agent Client Protocol (ACP)** — `opencode acp` — rather than scraping stdout. It is a thin wrapper over the shared ACP client ([`animus-provider-acp`](https://github.com/launchapp-dev/animus-provider-acp)), pinned to the OpenCode harness and advertising `provider_tool = "opencode"`. This gives structured streaming + tool events and a **native permission callback**, with every tool call gated through `animus agent approve-hook`. ACP is an internal transport detail; the kernel still routes OpenCode models to `tool: opencode` exactly as before.
 
 ## Install (planned)
 

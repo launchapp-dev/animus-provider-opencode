@@ -1,7 +1,18 @@
-use animus_plugin_protocol::{PluginInfo, PLUGIN_KIND_PROVIDER};
-use animus_plugin_runtime::provider_main_with_capabilities;
-use animus_provider_opencode::backend::OpenCodeProviderBackend;
-use animus_provider_opencode::config::OpenCodeConfig;
+//! `animus-provider-opencode` — the Animus provider for OpenCode.
+//!
+//! A thin wrapper over the shared ACP client (`animus-provider-acp`). It
+//! advertises `provider_tool = "opencode"` and pins the harness to
+//! `opencode acp`, so the kernel routes OpenCode models here exactly as before
+//! while the plugin drives the OpenCode CLI over the Agent Client Protocol
+//! (structured streaming + a native permission callback) instead of scraping
+//! stdout. Every tool call is gated through `animus agent approve-hook` by the
+//! ACP client.
+
+use std::sync::Arc;
+
+use animus_plugin_runtime::{run_provider, ProviderInfo, SessionBackendProvider};
+use animus_provider_acp::backend::AcpSessionBackend;
+use animus_provider_acp::config::AcpConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -12,23 +23,34 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let config = OpenCodeConfig::from_env()?;
-    let backend = OpenCodeProviderBackend::new(config);
+    // `OPENCODE_DEFAULT_MODEL` overrides the fallback model (empty lets OpenCode
+    // pick its configured default); `OPENCODE_BIN` overrides the harness binary
+    // (default `opencode`). The harness is always driven in ACP mode (`acp`).
+    let default_model = std::env::var("OPENCODE_DEFAULT_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_default();
+    let bin = std::env::var("OPENCODE_BIN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "opencode".to_string());
 
-    let info = PluginInfo {
-        name: env!("CARGO_PKG_NAME").into(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        plugin_kind: PLUGIN_KIND_PROVIDER.into(),
-        description: Some(env!("CARGO_PKG_DESCRIPTION").into()),
+    let config = AcpConfig::for_harness("opencode", bin, ["acp"], default_model.clone());
+    let backend = Arc::new(AcpSessionBackend::new(config));
+
+    // `ProviderInfo` fields are `&'static str`; leak the (process-lifetime)
+    // default model so an `OPENCODE_DEFAULT_MODEL` override is honored.
+    let default_model: &'static str = Box::leak(default_model.into_boxed_str());
+
+    let info = ProviderInfo {
+        plugin_name: env!("CARGO_PKG_NAME"),
+        plugin_version: env!("CARGO_PKG_VERSION"),
+        description: env!("CARGO_PKG_DESCRIPTION"),
+        default_tool: "opencode",
+        default_model,
     };
 
-    // opencode supports mid-flight cancel: the session manager terminates the
-    // opencode CLI subprocess and the wrapper emits SessionEvent::Error with
-    // recoverable=false, which becomes the AgentNotification::Error{
-    // recoverable:false} the testkit accepts as a valid cancel signal.
-    let extra_capabilities = vec!["$harness/cancellation-loop-v2".to_string()];
-
-    provider_main_with_capabilities(info, backend, extra_capabilities).await
+    run_provider(info, SessionBackendProvider::new(backend)).await
 }
 
 fn emit_manifest_if_requested() {
@@ -54,78 +76,29 @@ fn emit_manifest_if_requested() {
         "env_required": [
             {
                 "name": "OPENCODE_BIN",
-                "description": "Override the OpenCode CLI binary path.",
+                "description": "Override the OpenCode CLI binary (default `opencode`). Driven in ACP mode via the `acp` subcommand.",
                 "required": false
             },
             {
                 "name": "OPENCODE_DEFAULT_MODEL",
-                "description": "Fallback model used when the request omits a model.",
+                "description": "Fallback model used when an agent/run request omits a model.",
                 "required": false
             },
             {
                 "name": "OPENAI_API_KEY",
-                "description": "OpenAI API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "ANTHROPIC_API_KEY",
-                "description": "Anthropic API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "GEMINI_API_KEY",
-                "description": "Gemini API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "GOOGLE_API_KEY",
-                "description": "Google API key forwarded to OpenCode when configured.",
+                "description": "API key for OpenAI-compatible models routed through OpenCode.",
                 "sensitive": true,
                 "required": false
             },
             {
                 "name": "OPENROUTER_API_KEY",
-                "description": "OpenRouter API key forwarded to OpenCode when configured.",
+                "description": "OpenRouter API key used by some OpenCode providers.",
                 "sensitive": true,
                 "required": false
             },
             {
-                "name": "GROQ_API_KEY",
-                "description": "Groq API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "TOGETHER_API_KEY",
-                "description": "Together API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "MISTRAL_API_KEY",
-                "description": "Mistral API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "FIREWORKS_API_KEY",
-                "description": "Fireworks API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "DEEPSEEK_API_KEY",
-                "description": "DeepSeek API key forwarded to OpenCode when configured.",
-                "sensitive": true,
-                "required": false
-            },
-            {
-                "name": "OPENCODE_CONFIG_CONTENT",
-                "description": "Inline OpenCode config JSON the session backend injects per run.",
-                "sensitive": true,
+                "name": "ANIMUS_BIN",
+                "description": "Path to the `animus` binary used for the approve-hook approval gate (default: resolved on PATH).",
                 "required": false
             }
         ]
