@@ -1,41 +1,30 @@
 [package]
 name = "animus-provider-opencode"
-version = "0.2.6"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
-description = "OpenCode CLI provider plugin for Animus"
+description = "OpenCode provider plugin for Animus (drives the OpenCode CLI over ACP)"
 repository = "https://github.com/launchapp-dev/animus-provider-opencode"
 homepage = "https://github.com/launchapp-dev/animus-cli"
 readme = "README.md"
 default-run = "animus-provider-opencode"
-
-[lib]
-name = "animus_provider_opencode"
-path = "src/lib.rs"
 
 [[bin]]
 name = "animus-provider-opencode"
 path = "src/main.rs"
 
 [dependencies]
-animus-plugin-protocol   = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13.5" }
-animus-provider-protocol = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13.5" }
-animus-plugin-runtime    = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13.5" }
-animus-session-backend   = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.13.5" }
+# Reuse the shared ACP client. This plugin is a thin wrapper that pins the
+# harness to `opencode acp` and advertises provider_tool = "opencode", so the
+# kernel routes OpenCode models here while ACP stays an internal transport
+# detail.
+animus-provider-acp = { git = "https://github.com/launchapp-dev/animus-provider-acp", tag = "v0.1.1" }
 
-serde = { version = "1", features = ["derive"] }
+animus-plugin-protocol = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.17" }
+animus-plugin-runtime  = { git = "https://github.com/launchapp-dev/animus-protocol", tag = "v0.1.17" }
+
 serde_json = "1"
-
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "process", "sync", "time"] }
-async-trait = "0.1"
-futures = "0.3"
-
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
-thiserror = "1"
-
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
